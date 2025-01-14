@@ -96,3 +96,137 @@
 # {'type': 'cm_matrix', 'dataset': 'train', 'true_0': {"predicted_0": 15562, "predicte_1": 666}, 'true_1': {"predicted_0": 3333, "predicted_1": 1444}}
 # {'type': 'cm_matrix', 'dataset': 'test', 'true_0': {"predicted_0": 15562, "predicte_1": 650}, 'true_1': {"predicted_0": 2490, "predicted_1": 1420}}
 #
+
+
+import pandas as pd
+from sklearn.compose import ColumnTransformer
+from sklearn.preprocessing import StandardScaler, OneHotEncoder
+from sklearn.decomposition import PCA
+from sklearn.feature_selection import SelectKBest, f_classif
+from sklearn.neural_network import MLPClassifier
+from sklearn.pipeline import Pipeline
+from sklearn.model_selection import GridSearchCV
+from sklearn.metrics import precision_score, balanced_accuracy_score, recall_score, f1_score, confusion_matrix
+import os
+import json
+import gzip
+import pickle
+
+# Paso 1: Cargar y limpiar los datos
+train_data = pd.read_csv('files/input/train_data.csv.zip')
+test_data = pd.read_csv('files/input/test_data.csv.zip')
+
+def clean_data(df):
+    df = df.rename(columns={"default payment next month": "default"})
+    df = df.drop(columns=["ID"])
+    df = df.dropna()
+    df["EDUCATION"] = df["EDUCATION"].apply(lambda x: 4 if x > 4 else x)
+    df = df.loc[(df["MARRIAGE"] != 0) & (df["EDUCATION"] != 0)]
+    return df
+
+train_data = clean_data(train_data)
+test_data = clean_data(test_data)
+
+# Paso 2: Dividir los datasets en x_train, y_train, x_test, y_test
+X_train = train_data.drop(columns=["default"])
+y_train = train_data["default"]
+X_test = test_data.drop(columns=["default"])
+y_test = test_data["default"]
+
+# Paso 3: Crear el pipeline
+categorical_features = ["SEX", "EDUCATION", "MARRIAGE"]
+numerical_features = [col for col in X_train.columns if col not in categorical_features]
+
+preprocessor = ColumnTransformer(
+    transformers=[
+        ('num', StandardScaler(), numerical_features),
+        ('cat', OneHotEncoder(), categorical_features)
+    ]
+)
+
+pipeline = Pipeline(
+    [
+        ("preprocessor", preprocessor),
+        ('selectkbest', SelectKBest(score_func=f_classif)),
+        ('pca', PCA()),
+        ('mlp', MLPClassifier(max_iter=1000, random_state=420))
+    ]
+)
+
+# Paso 4: Optimizar hiperparámetros
+param_grid = {
+    'pca__n_components': [20],
+    'selectkbest__k': [20],
+    'mlp__hidden_layer_sizes': [(50,30,40,60)],
+    'mlp__alpha': [0.256],
+    'mlp__learning_rate': ['adaptive'],
+    'mlp__activation': ['relu'],
+    'mlp__solver': ['adam'],
+    'mlp__learning_rate_init': [0.001]
+}
+
+
+model = GridSearchCV(
+    pipeline,
+    param_grid,
+    cv=10,
+    scoring="balanced_accuracy",
+    n_jobs=-1,
+    refit=True
+)
+
+model.fit(X_train, y_train)
+
+# Paso 5: Guardar el modelo entrenado
+models_dir = 'files/models'
+os.makedirs(models_dir, exist_ok=True)
+
+with gzip.open("files/models/model.pkl.gz", "wb") as file:
+    pickle.dump(model, file)
+
+# Paso 6: Calcular métricas
+def calculate_metrics(model, x, y, dataset_type):
+    y_pred = model.predict(x)
+    metrics = {
+        "type": "metrics",
+        'dataset': dataset_type,
+        'precision': precision_score(y, y_pred),
+        'balanced_accuracy': balanced_accuracy_score(y, y_pred),
+        'recall': recall_score(y, y_pred),
+        'f1_score': f1_score(y, y_pred)
+    }
+    return metrics
+
+train_metrics = calculate_metrics(model, X_train, y_train, 'train')
+test_metrics = calculate_metrics(model, X_test, y_test, 'test')
+
+# Paso 7: Calcular matrices de confusión
+def calculate_confusion_matrix(model, x, y, dataset_type):
+    y_pred = model.predict(x)
+    cm = confusion_matrix(y, y_pred)
+    cm_dict = {
+        'type': 'cm_matrix',
+        'dataset': dataset_type,
+        'true_0': {'predicted_0': int(cm[0, 0]), 'predicted_1': int(cm[0, 1])},
+        'true_1': {'predicted_0': int(cm[1, 0]), 'predicted_1': int(cm[1, 1])}
+    }
+    return cm_dict
+
+train_cm = calculate_confusion_matrix(model, X_train, y_train, 'train')
+test_cm = calculate_confusion_matrix(model, X_test, y_test, 'test')
+
+# Paso 8: Guardar métricas y matrices de confusión
+output_file = "files/output/metrics.json"
+os.makedirs("files/output", exist_ok=True)
+
+with open(output_file, 'w', encoding='utf-8') as f:
+    json.dump(train_metrics, f, ensure_ascii=False)
+    f.write('\n')
+    json.dump(test_metrics, f, ensure_ascii=False)
+    f.write('\n')
+
+with open(output_file, 'a', encoding='utf-8') as f:
+    json.dump(train_cm, f, ensure_ascii=False)
+    f.write('\n')
+    json.dump(test_cm, f, ensure_ascii=False)
+    f.write('\n')
